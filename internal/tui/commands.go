@@ -62,18 +62,48 @@ func handleAskAgent(a *App) {
 		}
 
 		go func() {
+			ctx := context.Background()
+
 			fetchIssue := a.fetchIssueByID
 			if fetchIssue == nil {
 				fetchIssue = a.api.FetchIssueByID
 			}
 
-			fullIssue, err := fetchIssue(context.Background(), issueID)
+			fullIssue, err := fetchIssue(ctx, issueID)
 			if err != nil {
 				logger.ErrorWithErr(err, "tui.commands: failed to fetch issue for agent issue_id=%s", issueID)
 				a.QueueUpdateDraw(func() {
 					a.updateStatusBarWithError(err)
 				})
 				return
+			}
+
+			// Auto-set issue to "In Progress" and assign to current user
+			user := a.GetCurrentUser()
+			if user != nil {
+				states, err := a.cache.GetWorkflowStates(ctx, fullIssue.TeamID)
+				if err == nil {
+					var startedStateID *string
+					for _, s := range states {
+						if s.Type == "started" {
+							id := s.ID
+							startedStateID = &id
+							break
+						}
+					}
+					updateInput := linearapi.UpdateIssueInput{
+						ID:         fullIssue.ID,
+						AssigneeID: &user.ID,
+					}
+					if startedStateID != nil {
+						updateInput.StateID = startedStateID
+					}
+					if _, err := a.GetAPI().UpdateIssue(ctx, updateInput); err != nil {
+						logger.ErrorWithErr(err, "tui.commands: failed to update issue status/assignee issue=%s", fullIssue.Identifier)
+					}
+				} else {
+					logger.ErrorWithErr(err, "tui.commands: failed to fetch workflow states for team=%s", fullIssue.TeamID)
+				}
 			}
 
 			issueContext := agents.BuildIssueContext(fullIssue)
