@@ -125,20 +125,6 @@ func TestConfigFromSettingsValidation(t *testing.T) {
 				return settings
 			},
 		},
-		{
-			name: "invalid agent provider",
-			mutate: func(settings Settings) Settings {
-				settings.AgentProvider = "unknown"
-				return settings
-			},
-		},
-		{
-			name: "invalid agent sandbox",
-			mutate: func(settings Settings) Settings {
-				settings.AgentSandbox = "maybe"
-				return settings
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -160,17 +146,17 @@ func TestConfigFromSettingsRequiresAPIKey(t *testing.T) {
 	}
 }
 
-// TestDefaultSettingsAgentDefaults verifies agent defaults are set.
+// TestDefaultSettingsAgentDefaults verifies agent command defaults are set.
 func TestDefaultSettingsAgentDefaults(t *testing.T) {
 	settings := DefaultSettings()
-	if settings.AgentProvider != DefaultAgentProvider {
-		t.Errorf("AgentProvider = %q, want %q", settings.AgentProvider, DefaultAgentProvider)
+	if len(settings.AgentCommands) != 2 {
+		t.Errorf("AgentCommands length = %d, want 2", len(settings.AgentCommands))
 	}
-	if settings.AgentSandbox != DefaultAgentSandbox {
-		t.Errorf("AgentSandbox = %q, want %q", settings.AgentSandbox, DefaultAgentSandbox)
+	if settings.AgentCommands[0].Name != "Claude" {
+		t.Errorf("AgentCommands[0].Name = %q, want %q", settings.AgentCommands[0].Name, "Claude")
 	}
-	if settings.AgentModel != "" {
-		t.Errorf("AgentModel = %q, want empty string", settings.AgentModel)
+	if settings.AgentCommands[0].Command != "claude {prompt}" {
+		t.Errorf("AgentCommands[0].Command = %q, want %q", settings.AgentCommands[0].Command, "claude {prompt}")
 	}
 	if settings.AgentWorkspace != "" {
 		t.Errorf("AgentWorkspace = %q, want empty string", settings.AgentWorkspace)
@@ -180,6 +166,133 @@ func TestDefaultSettingsAgentDefaults(t *testing.T) {
 	}
 	if settings.Density != DefaultDensity {
 		t.Errorf("Density = %q, want %q", settings.Density, DefaultDensity)
+	}
+}
+
+// TestMigrateAgentCommands verifies backward compatibility migration.
+func TestMigrateAgentCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		model    string
+		sandbox  string
+		wantName string
+		wantCmd  string
+	}{
+		{
+			name:     "empty provider uses defaults",
+			provider: "",
+			wantName: "Claude",
+			wantCmd:  "claude {prompt}",
+		},
+		{
+			name:     "unknown provider uses defaults",
+			provider: "unknown",
+			wantName: "Claude",
+			wantCmd:  "claude {prompt}",
+		},
+		{
+			name:     "claude with model and skip permissions",
+			provider: "claude",
+			model:    "opus",
+			sandbox:  "dangerously-skip-permissions",
+			wantName: "Claude (migrated)",
+			wantCmd:  "claude --model opus --dangerously-skip-permissions {prompt}",
+		},
+		{
+			name:     "claude with no options",
+			provider: "claude",
+			wantName: "Claude (migrated)",
+			wantCmd:  "claude {prompt}",
+		},
+		{
+			name:     "cursor with sandbox and model",
+			provider: "cursor",
+			sandbox:  "enabled",
+			model:    "gpt-5.2",
+			wantName: "Cursor (migrated)",
+			wantCmd:  "cursor-agent --sandbox enabled --model gpt-5.2 {prompt}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmds := migrateAgentCommands(tt.provider, tt.model, tt.sandbox)
+			if tt.provider == "" || tt.provider == "unknown" {
+				// Should return default commands
+				if len(cmds) != 2 {
+					t.Fatalf("expected 2 default commands, got %d", len(cmds))
+				}
+				if cmds[0].Name != tt.wantName {
+					t.Errorf("Name = %q, want %q", cmds[0].Name, tt.wantName)
+				}
+				if cmds[0].Command != tt.wantCmd {
+					t.Errorf("Command = %q, want %q", cmds[0].Command, tt.wantCmd)
+				}
+				return
+			}
+			if len(cmds) != 1 {
+				t.Fatalf("expected 1 migrated command, got %d", len(cmds))
+			}
+			if cmds[0].Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", cmds[0].Name, tt.wantName)
+			}
+			if cmds[0].Command != tt.wantCmd {
+				t.Errorf("Command = %q, want %q", cmds[0].Command, tt.wantCmd)
+			}
+		})
+	}
+}
+
+// TestLoadSettingsWithAgentCommands verifies agent_commands are loaded from file.
+func TestLoadSettingsWithAgentCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+	settingsPath := filepath.Join(tmpDir, "config.json")
+
+	data := []byte(`{"agent_commands": [{"name": "Custom", "command": "my-agent {prompt}"}]}`)
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		t.Fatalf("write settings file: %v", err)
+	}
+
+	settings, err := LoadSettings(settingsPath)
+	if err != nil {
+		t.Fatalf("LoadSettings() error: %v", err)
+	}
+
+	if len(settings.AgentCommands) != 1 {
+		t.Fatalf("AgentCommands length = %d, want 1", len(settings.AgentCommands))
+	}
+	if settings.AgentCommands[0].Name != "Custom" {
+		t.Errorf("AgentCommands[0].Name = %q, want %q", settings.AgentCommands[0].Name, "Custom")
+	}
+	if settings.AgentCommands[0].Command != "my-agent {prompt}" {
+		t.Errorf("AgentCommands[0].Command = %q, want %q", settings.AgentCommands[0].Command, "my-agent {prompt}")
+	}
+}
+
+// TestLoadSettingsLegacyMigration verifies legacy fields are migrated when agent_commands is absent.
+func TestLoadSettingsLegacyMigration(t *testing.T) {
+	tmpDir := t.TempDir()
+	settingsPath := filepath.Join(tmpDir, "config.json")
+
+	data := []byte(`{"agent_provider": "claude", "agent_model": "opus", "agent_sandbox": "dangerously-skip-permissions"}`)
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		t.Fatalf("write settings file: %v", err)
+	}
+
+	settings, err := LoadSettings(settingsPath)
+	if err != nil {
+		t.Fatalf("LoadSettings() error: %v", err)
+	}
+
+	if len(settings.AgentCommands) != 1 {
+		t.Fatalf("AgentCommands length = %d, want 1", len(settings.AgentCommands))
+	}
+	if settings.AgentCommands[0].Name != "Claude (migrated)" {
+		t.Errorf("Name = %q, want %q", settings.AgentCommands[0].Name, "Claude (migrated)")
+	}
+	if settings.AgentCommands[0].Command != "claude --model opus --dangerously-skip-permissions {prompt}" {
+		t.Errorf("Command = %q, want %q", settings.AgentCommands[0].Command, "claude --model opus --dangerously-skip-permissions {prompt}")
 	}
 }
 

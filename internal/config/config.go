@@ -21,21 +21,33 @@ const (
 
 // Default configuration values.
 const (
-	DefaultTimeout       = 30 * time.Second
-	DefaultPageSize      = 50
-	DefaultCacheTTL      = 5 * time.Minute
-	DefaultAPIEndpoint   = "https://api.linear.app/graphql"
-	DefaultLogLevel      = "warning" // debug, info, warning, error
-	ThemeLinear          = "linear"
-	ThemeHighContrast    = "high_contrast"
-	ThemeColorBlind      = "color_blind"
-	DefaultTheme         = ThemeLinear
-	DensityComfortable   = "comfortable"
-	DensityCompact       = "compact"
-	DefaultDensity       = DensityComfortable
-	DefaultAgentProvider = "cursor"
-	DefaultAgentSandbox  = "enabled"
+	DefaultTimeout     = 30 * time.Second
+	DefaultPageSize    = 50
+	DefaultCacheTTL    = 5 * time.Minute
+	DefaultAPIEndpoint = "https://api.linear.app/graphql"
+	DefaultLogLevel    = "warning" // debug, info, warning, error
+	ThemeLinear        = "linear"
+	ThemeHighContrast  = "high_contrast"
+	ThemeColorBlind    = "color_blind"
+	DefaultTheme       = ThemeLinear
+	DensityComfortable = "comfortable"
+	DensityCompact     = "compact"
+	DefaultDensity     = DensityComfortable
 )
+
+// AgentCommand defines a user-configurable agent command.
+type AgentCommand struct {
+	Name    string `json:"name"`    // Display name, e.g. "Claude (skip permissions)"
+	Command string `json:"command"` // Command template with {prompt} placeholder
+}
+
+// DefaultAgentCommands returns the default set of agent commands.
+func DefaultAgentCommands() []AgentCommand {
+	return []AgentCommand{
+		{Name: "Claude", Command: "claude {prompt}"},
+		{Name: "Claude (skip permissions)", Command: "claude --dangerously-skip-permissions {prompt}"},
+	}
+}
 
 // getDefaultLogFile returns the default log file path: $HOME/.linear-tui/app.log
 func getDefaultLogFile() string {
@@ -76,14 +88,8 @@ type Config struct {
 	// Density controls the UI spacing density.
 	Density string
 
-	// AgentProvider selects the agent CLI provider (cursor or claude).
-	AgentProvider string
-
-	// AgentSandbox configures sandboxing for the agent CLI (enabled or disabled).
-	AgentSandbox string
-
-	// AgentModel selects the agent model when supported by the provider.
-	AgentModel string
+	// AgentCommands is the list of user-configurable agent commands.
+	AgentCommands []AgentCommand
 
 	// AgentWorkspace is the default workspace path for agent runs.
 	AgentWorkspace string
@@ -108,9 +114,7 @@ func LoadFromEnv() (Config, error) {
 		LogLevel:       DefaultLogLevel,
 		Theme:          DefaultTheme,
 		Density:        DefaultDensity,
-		AgentProvider:  DefaultAgentProvider,
-		AgentSandbox:   DefaultAgentSandbox,
-		AgentModel:     "",
+		AgentCommands:  DefaultAgentCommands(),
 		AgentWorkspace: "",
 	}
 

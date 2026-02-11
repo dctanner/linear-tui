@@ -2,33 +2,31 @@ package tui
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/roeyazroel/linear-tui/internal/agents"
 	"github.com/roeyazroel/linear-tui/internal/config"
 	"github.com/roeyazroel/linear-tui/internal/linearapi"
 )
 
-// TestAskAgentCommand_ShowsModalsAndStreams verifies the command flow.
-func TestAskAgentCommand_ShowsModalsAndStreams(t *testing.T) {
+// TestAskAgentCommand_SetsPendingExec verifies the command flow sets pendingExec
+// with the correct binary, args, and dir, then stops the TUI.
+func TestAskAgentCommand_SetsPendingExec(t *testing.T) {
 	cfg := config.Config{
-		PageSize:      1,
-		CacheTTL:      time.Minute,
-		AgentProvider: config.DefaultAgentProvider,
-		AgentSandbox:  config.DefaultAgentSandbox,
-		AgentModel:    "gpt-5.2",
+		PageSize: 1,
+		CacheTTL: time.Minute,
+		AgentCommands: []config.AgentCommand{
+			{Name: "Test Agent", Command: "test-agent --flag {prompt}"},
+		},
 	}
 	app := NewApp(&linearapi.Client{}, cfg, nil)
 
 	// Use a mutex to synchronize access to pages and other shared state
 	var pagesMu sync.Mutex
+	var stopped bool
 	app.queueUpdateDraw = func(f func()) {
 		pagesMu.Lock()
 		f()
@@ -51,41 +49,10 @@ func TestAskAgentCommand_ShowsModalsAndStreams(t *testing.T) {
 		}, nil
 	}
 
-	execPath, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable() error: %v", err)
-	}
-
 	workspaceDir := t.TempDir()
-	var capturedArgs []string
-	var capturedCmdDir string
-	var cmdReady bool
-	var captureMu sync.Mutex
 
-	app.agentRunner = &agents.Runner{
-		LookPath: func(string) (string, error) {
-			return "helper", nil
-		},
-		ExecCmd: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			captureMu.Lock()
-			capturedArgs = append([]string(nil), args...)
-			captureMu.Unlock()
-
-			cmd := exec.CommandContext(ctx, execPath, "-test.run=TestAgentCommandHelperProcess")
-			cmd.Env = append(os.Environ(),
-				"AGENT_TUI_HELPER=1",
-				"AGENT_TUI_MODE=success",
-			)
-			// Set the Dir here since the runner will set it after this returns
-			// but we need to capture it for the test
-			cmd.Dir = workspaceDir
-
-			captureMu.Lock()
-			capturedCmdDir = cmd.Dir
-			cmdReady = true
-			captureMu.Unlock()
-			return cmd
-		},
+	app.parseCommand = func(commandTemplate, fullPrompt, branchName string) (string, []string, error) {
+		return "/usr/bin/test-agent", []string{"/usr/bin/test-agent", "--flag", fullPrompt}, nil
 	}
 
 	command := findCommandByID(DefaultCommands(app), "ask_agent")
@@ -104,75 +71,78 @@ func TestAskAgentCommand_ShowsModalsAndStreams(t *testing.T) {
 	pagesMu.Lock()
 	app.agentPromptModal.promptField.SetText("Summarize", true)
 	app.agentPromptModal.workspaceField.SetText(workspaceDir)
+	// Select the first command in the dropdown
+	if app.agentPromptModal.commandField != nil {
+		app.agentPromptModal.commandField.SetCurrentOption(0)
+	}
 	app.agentPromptModal.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModCtrl))
 	pagesMu.Unlock()
 
 	waitForCondition(t, time.Second, func() bool {
 		pagesMu.Lock()
 		defer pagesMu.Unlock()
-		return app.pages.HasPage("agent_output")
+		return app.pendingExec != nil
 	})
 
-	waitForCondition(t, time.Second, func() bool {
-		captureMu.Lock()
-		defer captureMu.Unlock()
-		return cmdReady && capturedCmdDir == workspaceDir
-	})
+	pagesMu.Lock()
+	pending := app.pendingExec
+	stopped = pending != nil // app.Stop() was called via QueueUpdateDraw
+	pagesMu.Unlock()
 
-	captureMu.Lock()
-	gotArgs := append([]string(nil), capturedArgs...)
-	gotCmdDir := capturedCmdDir
-	captureMu.Unlock()
-
-	if gotCmdDir != workspaceDir {
-		t.Fatalf("agent cmd dir = %q, want %q", gotCmdDir, workspaceDir)
+	if !stopped || pending == nil {
+		t.Fatal("expected pendingExec to be set")
 	}
 
-	joined := strings.Join(gotArgs, " ")
-	if !strings.Contains(joined, "--force") {
-		t.Fatalf("expected --force in args: %s", joined)
+	if pending.Binary != "/usr/bin/test-agent" {
+		t.Fatalf("binary = %q, want %q", pending.Binary, "/usr/bin/test-agent")
 	}
-	if !strings.Contains(joined, "--sandbox") || !strings.Contains(joined, config.DefaultAgentSandbox) {
-		t.Fatalf("expected sandbox option in args: %s", joined)
+
+	if pending.Dir != workspaceDir {
+		t.Fatalf("dir = %q, want %q", pending.Dir, workspaceDir)
 	}
-	if !strings.Contains(joined, "--model") || !strings.Contains(joined, "gpt-5.2") {
-		t.Fatalf("expected model option in args: %s", joined)
+
+	// Args[0] should be the binary name
+	if len(pending.Args) == 0 || pending.Args[0] != "/usr/bin/test-agent" {
+		t.Fatalf("args[0] = %q, want %q", pending.Args[0], "/usr/bin/test-agent")
 	}
-	if !strings.Contains(joined, "--workspace") || !strings.Contains(joined, workspaceDir) {
-		t.Fatalf("expected workspace option in args: %s", joined)
+
+	joined := strings.Join(pending.Args, " ")
+
+	// Should contain the --flag from the command template
+	if !strings.Contains(joined, "--flag") {
+		t.Fatalf("expected --flag in args: %s", joined)
+	}
+
+	// Should contain issue context (the prompt includes it)
+	if !strings.Contains(joined, "Issue Context") {
+		t.Fatalf("expected issue context in args: %s", joined)
 	}
 }
 
-// TestDefaultCommands_GatesAskAgent verifies command gating by availability.
+// TestDefaultCommands_GatesAskAgent verifies command gating by AgentCommands.
 func TestDefaultCommands_GatesAskAgent(t *testing.T) {
+	// No agent commands → ask_agent should be gated
 	cfg := config.Config{
 		PageSize:      1,
 		CacheTTL:      time.Minute,
-		AgentProvider: config.DefaultAgentProvider,
-		AgentSandbox:  config.DefaultAgentSandbox,
+		AgentCommands: nil,
 	}
 	app := NewApp(&linearapi.Client{}, cfg, nil)
 
-	app.agentRunner = &agents.Runner{
-		LookPath: func(string) (string, error) {
-			return "", exec.ErrNotFound
-		},
-	}
-
 	commands := DefaultCommands(app)
 	if findCommandByID(commands, "ask_agent") != nil {
-		t.Fatal("expected ask_agent to be gated when no agents are available")
+		t.Fatal("expected ask_agent to be gated when no agent commands are configured")
 	}
 
-	app.agentRunner = &agents.Runner{
-		LookPath: func(string) (string, error) {
-			return "agent", nil
-		},
+	// With agent commands → ask_agent should be present
+	cfg.AgentCommands = []config.AgentCommand{
+		{Name: "Claude", Command: "claude {prompt}"},
 	}
+	app2 := NewApp(&linearapi.Client{}, cfg, nil)
 
-	commands = DefaultCommands(app)
+	commands = DefaultCommands(app2)
 	if findCommandByID(commands, "ask_agent") == nil {
-		t.Fatal("expected ask_agent when an agent is available")
+		t.Fatal("expected ask_agent when agent commands are configured")
 	}
 }
 
@@ -185,20 +155,4 @@ func findCommandByID(commands []Command, id string) *Command {
 		}
 	}
 	return nil
-}
-
-// TestAgentCommandHelperProcess is a helper process for command tests.
-func TestAgentCommandHelperProcess(t *testing.T) {
-	if os.Getenv("AGENT_TUI_HELPER") != "1" {
-		return
-	}
-
-	mode := os.Getenv("AGENT_TUI_MODE")
-	switch mode {
-	case "success":
-		_, _ = fmt.Fprintln(os.Stdout, `{"text":"hello"}`)
-		os.Exit(0)
-	default:
-		os.Exit(0)
-	}
 }

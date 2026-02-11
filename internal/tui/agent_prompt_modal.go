@@ -10,24 +10,27 @@ import (
 
 // AgentPromptModal manages the prompt input for agent runs.
 type AgentPromptModal struct {
-	app             *App
-	modal           *tview.Flex
-	modalContent    *tview.Flex
-	modalWidth      int
-	form            *tview.Form
-	templateField   *tview.DropDown
-	templateLabels  []string
-	templatePrompts []string
-	promptField     *tview.TextArea
-	workspaceField  *tview.InputField
-	onSubmit        func(prompt string, workspace string)
+	app                 *App
+	modal               *tview.Flex
+	modalContent        *tview.Flex
+	modalWidth          int
+	form                *tview.Form
+	commandField        *tview.DropDown
+	commandValues       []string
+	lastSelectedCommand int
+	templateField       *tview.DropDown
+	templateLabels      []string
+	templatePrompts     []string
+	promptField         *tview.TextArea
+	workspaceField      *tview.InputField
+	onSubmit            func(prompt string, workspace string, command string)
 }
 
 const (
 	agentPromptLabel    = "Prompt (issue context included)"
 	minPromptModalWidth = 80
 	maxPromptModalWidth = 140
-	promptModalHeight   = 20
+	promptModalHeight   = 22
 )
 
 // NewAgentPromptModal creates a new agent prompt modal.
@@ -43,6 +46,27 @@ func NewAgentPromptModal(app *App) *AgentPromptModal {
 	am.form.SetButtonBackgroundColor(app.theme.Accent)
 	am.form.SetButtonTextColor(app.theme.SelectionText)
 	am.form.SetLabelColor(app.theme.Foreground)
+
+	// Command selector (first field)
+	if len(app.config.AgentCommands) > 0 {
+		labels := make([]string, 0, len(app.config.AgentCommands))
+		values := make([]string, 0, len(app.config.AgentCommands))
+		for _, cmd := range app.config.AgentCommands {
+			labels = append(labels, cmd.Name)
+			values = append(values, cmd.Command)
+		}
+		am.commandValues = values
+
+		am.commandField = tview.NewDropDown().
+			SetLabel("Command").
+			SetOptions(labels, nil)
+		am.commandField.SetFieldWidth(40)
+		am.commandField.SetListStyles(
+			tcell.StyleDefault.Background(app.theme.HeaderBg).Foreground(app.theme.Foreground),
+			tcell.StyleDefault.Background(app.theme.Accent).Foreground(app.theme.SelectionText),
+		)
+		am.form.AddFormItem(am.commandField)
+	}
 
 	am.workspaceField = tview.NewInputField().
 		SetLabel("Workspace").
@@ -118,7 +142,7 @@ func NewAgentPromptModal(app *App) *AgentPromptModal {
 }
 
 // Show displays the prompt modal.
-func (am *AgentPromptModal) Show(onSubmit func(prompt string, workspace string)) {
+func (am *AgentPromptModal) Show(onSubmit func(prompt string, workspace string, command string)) {
 	am.onSubmit = onSubmit
 	defaultPrompt := ""
 	if am.templateField != nil && len(am.templatePrompts) > 0 {
@@ -136,6 +160,9 @@ func (am *AgentPromptModal) Show(onSubmit func(prompt string, workspace string))
 			}
 		}
 		am.workspaceField.SetText(defaultWorkspace)
+	}
+	if am.commandField != nil {
+		am.commandField.SetCurrentOption(am.lastSelectedCommand)
 	}
 
 	am.updateModalWidth()
@@ -183,9 +210,18 @@ func (am *AgentPromptModal) submitPrompt() {
 		workspace = strings.TrimSpace(am.workspaceField.GetText())
 	}
 
+	command := ""
+	if am.commandField != nil {
+		index, _ := am.commandField.GetCurrentOption()
+		if index >= 0 && index < len(am.commandValues) {
+			am.lastSelectedCommand = index
+			command = am.commandValues[index]
+		}
+	}
+
 	am.Hide()
 	if am.onSubmit != nil {
-		am.onSubmit(prompt, workspace)
+		am.onSubmit(prompt, workspace, command)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/roeyazroel/linear-tui/internal/config"
 	"github.com/roeyazroel/linear-tui/internal/linearapi"
@@ -88,6 +89,25 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error closing logger: %v\n", closeErr)
 		}
 		os.Exit(1) //nolint:gocritic // defer cleanup handled explicitly above
+	}
+
+	// If the TUI set a pending exec command (e.g. agent launch), replace the
+	// process with that command so the agent runs interactively in the terminal.
+	if pending := app.PendingExec(); pending != nil {
+		logger.Info("app.main: exec agent binary=%s", pending.Binary)
+		if err := logger.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error closing logger: %v\n", err)
+		}
+		if pending.Dir != "" {
+			if err := os.Chdir(pending.Dir); err != nil {
+				fmt.Fprintf(os.Stderr, "Error changing directory: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if err := syscall.Exec(pending.Binary, pending.Args, os.Environ()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error executing agent: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	logger.Info("app.main: application shutdown")

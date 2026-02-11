@@ -41,7 +41,7 @@ func (p *CursorProvider) ResolveBinary() (string, bool) {
 
 // BuildArgs builds argv for a non-interactive Cursor run.
 func (p *CursorProvider) BuildArgs(prompt string, issueContext string, options AgentRunOptions) []string {
-	fullPrompt := buildAgentPrompt(prompt, issueContext)
+	fullPrompt := BuildAgentPrompt(prompt, issueContext)
 	args := []string{"--force", "--print", "--output-format", "stream-json"}
 	if options.Sandbox != "" {
 		args = append(args, "--sandbox", options.Sandbox)

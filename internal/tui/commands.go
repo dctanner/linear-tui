@@ -36,6 +36,8 @@ type CommandContext struct {
 }
 
 // handleAskAgent handles the ask agent command.
+// It collects the prompt, resolves the command binary, stores a PendingExecCommand,
+// and stops the TUI so that main.go can exec the agent interactively.
 func handleAskAgent(a *App) {
 	issue := a.GetSelectedIssue()
 	if issue == nil {
@@ -46,20 +48,18 @@ func handleAskAgent(a *App) {
 	if a.agentPromptModal == nil {
 		a.agentPromptModal = NewAgentPromptModal(a)
 	}
-	if a.agentOutputModal == nil {
-		a.agentOutputModal = NewAgentOutputModal(a)
-	}
-	if a.agentRunner == nil {
-		a.agentRunner = agents.NewRunner()
-	}
 
 	issueID := issue.ID
-	a.agentPromptModal.Show(func(prompt string, workspace string) {
+	a.agentPromptModal.Show(func(prompt string, workspace string, command string) {
 		prompt = strings.TrimSpace(prompt)
 		if prompt == "" {
 			return
 		}
 		workspace = strings.TrimSpace(workspace)
+		command = strings.TrimSpace(command)
+		if command == "" {
+			return
+		}
 
 		go func() {
 			fetchIssue := a.fetchIssueByID
@@ -77,68 +77,36 @@ func handleAskAgent(a *App) {
 			}
 
 			issueContext := agents.BuildIssueContext(fullIssue)
-			runner := a.agentRunner
+			fullPrompt := agents.BuildAgentPrompt(prompt, issueContext)
 
-			selected, err := agents.ProviderForKey(a.config.AgentProvider, runner.LookPath)
+			parseCommand := a.parseCommand
+			if parseCommand == nil {
+				parseCommand = agents.ParseCommand
+			}
+
+			binary, args, err := parseCommand(command, fullPrompt, fullIssue.BranchName)
 			if err != nil {
-				logger.Error("tui.commands: invalid agent provider provider=%s", a.config.AgentProvider)
+				logger.ErrorWithErr(err, "tui.commands: failed to parse agent command")
 				a.QueueUpdateDraw(func() {
 					a.updateStatusBarWithError(err)
 				})
 				return
 			}
 
-			if _, ok := selected.ResolveBinary(); !ok {
-				logger.Error("tui.commands: agent binary not found provider=%s", selected.Name())
-				a.QueueUpdateDraw(func() {
-					a.updateStatusBarWithError(fmt.Errorf("agent binary not found for %s", selected.Name()))
-				})
-				return
-			}
-
-			options := agents.AgentRunOptions{
-				Workspace: workspace,
-				Model:     strings.TrimSpace(a.config.AgentModel),
-				Sandbox:   strings.TrimSpace(a.config.AgentSandbox),
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
 			a.QueueUpdateDraw(func() {
-				title := fmt.Sprintf(" %s Output ", selected.Name())
-				a.agentOutputModal.Show(title, cancel)
-				a.agentOutputModal.AppendLine(fmt.Sprintf("Starting %s agent run...", selected.Name()))
+				a.pendingExec = &PendingExecCommand{
+					Binary: binary,
+					Args:   args,
+					Dir:    workspace,
+				}
+				a.app.Stop()
 			})
-
-			runErr := runner.Run(ctx, selected, prompt, issueContext, options, func(event agents.AgentEvent) {
-				a.agentOutputModal.AppendEvent(event)
-			}, func(line string) {
-				a.agentOutputModal.AppendRawLine(line)
-			}, func(runErr error) {
-				a.agentOutputModal.AppendLine(fmt.Sprintf("error: %v", runErr))
-			})
-
-			a.agentOutputModal.StopSpinner()
-
-			if runErr != nil {
-				a.QueueUpdateDraw(func() {
-					a.agentOutputModal.AppendLine(fmt.Sprintf("error: %v", runErr))
-				})
-				return
-			}
-
-			a.agentOutputModal.AppendLine("Agent run completed.")
 		}()
 	})
 }
 
 // DefaultCommands returns the default set of commands for the palette.
 func DefaultCommands(app *App) []Command {
-	lookPath := exec.LookPath
-	if app != nil && app.agentRunner != nil && app.agentRunner.LookPath != nil {
-		lookPath = app.agentRunner.LookPath
-	}
-	availableProviders := agents.AvailableProviderKeys(lookPath)
-
 	commands := []Command{
 		{
 			ID:           "refresh",
@@ -250,10 +218,11 @@ func DefaultCommands(app *App) []Command {
 			},
 		},
 		{
-			ID:       "ask_agent",
-			Title:    "Ask agent about selected issue",
-			Keywords: []string{"agent", "ai", "claude", "cursor", "assistant"},
-			Run:      handleAskAgent,
+			ID:           "ask_agent",
+			Title:        "Launch agent",
+			Keywords:     []string{"agent", "ai", "claude", "cursor", "assistant"},
+			ShortcutRune: 'a',
+			Run:          handleAskAgent,
 		},
 		{
 			ID:           "assign_me",
@@ -370,10 +339,9 @@ func DefaultCommands(app *App) []Command {
 			},
 		},
 		{
-			ID:           "assign_user",
-			Title:        "Assign to user",
-			Keywords:     []string{"assign", "user", "team", "member"},
-			ShortcutRune: 'a',
+			ID:       "assign_user",
+			Title:    "Assign to user",
+			Keywords: []string{"assign", "user", "team", "member"},
 			Run: func(a *App) {
 				issue := a.GetSelectedIssue()
 				if issue == nil {
@@ -670,7 +638,7 @@ func DefaultCommands(app *App) []Command {
 			},
 		},
 	}
-	if len(availableProviders) == 0 {
+	if len(app.config.AgentCommands) == 0 {
 		filtered := make([]Command, 0, len(commands))
 		for _, command := range commands {
 			if command.ID == "ask_agent" {

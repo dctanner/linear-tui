@@ -44,7 +44,7 @@ func (p *ClaudeProvider) ResolveBinary() (string, bool) {
 
 // BuildArgs builds argv for a non-interactive Claude run.
 func (p *ClaudeProvider) BuildArgs(prompt string, issueContext string, options AgentRunOptions) []string {
-	fullPrompt := buildAgentPrompt(prompt, issueContext)
+	fullPrompt := BuildAgentPrompt(prompt, issueContext)
 	args := []string{
 		"-p",
 		"--verbose",
@@ -58,7 +58,7 @@ func (p *ClaudeProvider) BuildArgs(prompt string, issueContext string, options A
 		args = append(args, "--add-dir", options.Workspace)
 	}
 	if mode, ok := claudePermissionMode(options.Sandbox); ok {
-		args = append(args, "--permission-mode", mode)
+		args = append(args, mode)
 	}
 	args = append(args, fullPrompt)
 	return args
@@ -165,9 +165,11 @@ func buildClaudeResumeCommand(sessionID string) string {
 func claudePermissionMode(sandbox string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(sandbox)) {
 	case "enabled":
-		return "default", true
+		return "--permission-mode default", true
 	case "disabled":
-		return "bypassPermissions", true
+		return "--permission-mode bypassPermissions", true
+	case "dangerously-skip-permissions":
+		return "--dangerously-skip-permissions", true
 	default:
 		return "", false
 	}
@@ -322,8 +324,8 @@ func summarizeClaudeToolResult(content any, result *claudeToolUseResultPayload) 
 	return ""
 }
 
-// buildAgentPrompt combines the user prompt with issue context.
-func buildAgentPrompt(prompt string, issueContext string) string {
+// BuildAgentPrompt combines the user prompt with issue context.
+func BuildAgentPrompt(prompt string, issueContext string) string {
 	return strings.TrimSpace(strings.Join([]string{
 		"Use the issue context below to respond to the instruction.",
 		"",

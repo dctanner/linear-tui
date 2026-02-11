@@ -200,6 +200,7 @@ type Issue struct {
 	TeamID      string
 	ProjectID   string
 	URL         string
+	BranchName  string
 	Archived    bool
 	Labels      []IssueLabel
 	Parent      *IssueRef       // Parent issue reference (nil if top-level)
@@ -668,6 +669,7 @@ func (c *Client) searchIssuesPage(ctx context.Context, params FetchIssuesParams,
 					}
 				}
 				URL        graphql.String
+				BranchName graphql.String
 				ArchivedAt *graphql.String
 				Parent     *struct {
 					ID         graphql.String
@@ -825,6 +827,7 @@ func (c *Client) fetchIssuesWithFilterPage(ctx context.Context, params FetchIssu
 					}
 				}
 				URL        graphql.String
+				BranchName graphql.String
 				ArchivedAt *graphql.String
 				Parent     *struct {
 					ID         graphql.String
@@ -925,6 +928,7 @@ func (c *Client) parseIssueNode(node interface{}) Issue {
 	}
 
 	url := v.FieldByName("URL").String()
+	branchName := v.FieldByName("BranchName").String()
 
 	archivedField := v.FieldByName("ArchivedAt")
 	archived := !archivedField.IsNil()
@@ -981,6 +985,7 @@ func (c *Client) parseIssueNode(node interface{}) Issue {
 		TeamID:      teamID,
 		ProjectID:   projectID,
 		URL:         url,
+		BranchName:  branchName,
 		Archived:    archived,
 		Labels:      labels,
 		Parent:      parent,
@@ -1038,6 +1043,7 @@ func (c *Client) FetchIssueByID(ctx context.Context, id string) (Issue, error) {
 				}
 			}
 			URL        graphql.String
+			BranchName graphql.String
 			ArchivedAt *graphql.String
 			Parent     *struct {
 				ID         graphql.String
@@ -1173,6 +1179,7 @@ func (c *Client) FetchIssueByID(ctx context.Context, id string) (Issue, error) {
 		TeamID:      string(query.Issue.Team.ID),
 		ProjectID:   projectID,
 		URL:         string(query.Issue.URL),
+		BranchName:  string(query.Issue.BranchName),
 		Archived:    archived,
 		Labels:      labels,
 		Parent:      parent,

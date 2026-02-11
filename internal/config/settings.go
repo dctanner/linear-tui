@@ -12,34 +12,34 @@ import (
 
 // SettingsFile represents the on-disk JSON with optional fields.
 type SettingsFile struct {
-	APIEndpoint    *string `json:"api_endpoint"`
-	Timeout        *string `json:"timeout"`
-	PageSize       *int    `json:"page_size"`
-	CacheTTL       *string `json:"cache_ttl"`
-	LogFile        *string `json:"log_file"`
-	LogLevel       *string `json:"log_level"`
-	Theme          *string `json:"theme"`
-	Density        *string `json:"density"`
-	AgentProvider  *string `json:"agent_provider"`
-	AgentSandbox   *string `json:"agent_sandbox"`
-	AgentModel     *string `json:"agent_model"`
-	AgentWorkspace *string `json:"agent_workspace"`
+	APIEndpoint    *string         `json:"api_endpoint"`
+	Timeout        *string         `json:"timeout"`
+	PageSize       *int            `json:"page_size"`
+	CacheTTL       *string         `json:"cache_ttl"`
+	LogFile        *string         `json:"log_file"`
+	LogLevel       *string         `json:"log_level"`
+	Theme          *string         `json:"theme"`
+	Density        *string         `json:"density"`
+	AgentCommands  *[]AgentCommand `json:"agent_commands"`
+	AgentWorkspace *string         `json:"agent_workspace"`
+	// Legacy fields (read-only for migration)
+	AgentProvider *string `json:"agent_provider"`
+	AgentSandbox  *string `json:"agent_sandbox"`
+	AgentModel    *string `json:"agent_model"`
 }
 
 // Settings contains concrete settings values for UI and persistence.
 type Settings struct {
-	APIEndpoint    string `json:"api_endpoint"`
-	Timeout        string `json:"timeout"`
-	PageSize       int    `json:"page_size"`
-	CacheTTL       string `json:"cache_ttl"`
-	LogFile        string `json:"log_file"`
-	LogLevel       string `json:"log_level"`
-	Theme          string `json:"theme"`
-	Density        string `json:"density"`
-	AgentProvider  string `json:"agent_provider"`
-	AgentSandbox   string `json:"agent_sandbox"`
-	AgentModel     string `json:"agent_model"`
-	AgentWorkspace string `json:"agent_workspace"`
+	APIEndpoint    string         `json:"api_endpoint"`
+	Timeout        string         `json:"timeout"`
+	PageSize       int            `json:"page_size"`
+	CacheTTL       string         `json:"cache_ttl"`
+	LogFile        string         `json:"log_file"`
+	LogLevel       string         `json:"log_level"`
+	Theme          string         `json:"theme"`
+	Density        string         `json:"density"`
+	AgentCommands  []AgentCommand `json:"agent_commands"`
+	AgentWorkspace string         `json:"agent_workspace"`
 }
 
 // DefaultSettings returns the default settings for the config file and UI.
@@ -53,9 +53,7 @@ func DefaultSettings() Settings {
 		LogLevel:       DefaultLogLevel,
 		Theme:          DefaultTheme,
 		Density:        DefaultDensity,
-		AgentProvider:  DefaultAgentProvider,
-		AgentSandbox:   DefaultAgentSandbox,
-		AgentModel:     "",
+		AgentCommands:  DefaultAgentCommands(),
 		AgentWorkspace: "",
 	}
 }
@@ -71,9 +69,7 @@ func SettingsFromConfig(cfg Config) Settings {
 		LogLevel:       cfg.LogLevel,
 		Theme:          cfg.Theme,
 		Density:        cfg.Density,
-		AgentProvider:  cfg.AgentProvider,
-		AgentSandbox:   cfg.AgentSandbox,
-		AgentModel:     cfg.AgentModel,
+		AgentCommands:  cfg.AgentCommands,
 		AgentWorkspace: cfg.AgentWorkspace,
 	}
 }
@@ -118,12 +114,9 @@ func ConfigFromSettings(apiKey string, settings Settings) (Config, error) {
 		return Config{}, err
 	}
 
-	if err := validateAgentProvider(settings.AgentProvider, "agent_provider"); err != nil {
-		return Config{}, err
-	}
-
-	if err := validateAgentSandbox(settings.AgentSandbox, "agent_sandbox"); err != nil {
-		return Config{}, err
+	agentCommands := settings.AgentCommands
+	if agentCommands == nil {
+		agentCommands = DefaultAgentCommands()
 	}
 
 	return Config{
@@ -136,9 +129,7 @@ func ConfigFromSettings(apiKey string, settings Settings) (Config, error) {
 		LogLevel:       settings.LogLevel,
 		Theme:          theme,
 		Density:        density,
-		AgentProvider:  settings.AgentProvider,
-		AgentSandbox:   settings.AgentSandbox,
-		AgentModel:     settings.AgentModel,
+		AgentCommands:  agentCommands,
 		AgentWorkspace: settings.AgentWorkspace,
 	}, nil
 }
@@ -214,20 +205,80 @@ func LoadSettings(path string) (Settings, error) {
 	if file.Density != nil {
 		settings.Density = *file.Density
 	}
-	if file.AgentProvider != nil {
-		settings.AgentProvider = *file.AgentProvider
-	}
-	if file.AgentSandbox != nil {
-		settings.AgentSandbox = *file.AgentSandbox
-	}
-	if file.AgentModel != nil {
-		settings.AgentModel = *file.AgentModel
+	if file.AgentCommands != nil {
+		settings.AgentCommands = *file.AgentCommands
+	} else {
+		// Migrate from legacy fields
+		var provider, model, sandbox string
+		if file.AgentProvider != nil {
+			provider = *file.AgentProvider
+		}
+		if file.AgentModel != nil {
+			model = *file.AgentModel
+		}
+		if file.AgentSandbox != nil {
+			sandbox = *file.AgentSandbox
+		}
+		settings.AgentCommands = migrateAgentCommands(provider, model, sandbox)
 	}
 	if file.AgentWorkspace != nil {
 		settings.AgentWorkspace = *file.AgentWorkspace
 	}
 
 	return settings, nil
+}
+
+// migrateAgentCommands builds agent commands from legacy provider/model/sandbox fields.
+func migrateAgentCommands(provider, model, sandbox string) []AgentCommand {
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	model = strings.TrimSpace(model)
+	sandbox = strings.TrimSpace(strings.ToLower(sandbox))
+
+	if provider == "" {
+		return DefaultAgentCommands()
+	}
+
+	switch provider {
+	case "claude":
+		return migrateClaude(model, sandbox)
+	case "cursor":
+		return migrateCursor(model, sandbox)
+	default:
+		return DefaultAgentCommands()
+	}
+}
+
+// migrateClaude builds agent commands from legacy Claude provider fields.
+func migrateClaude(model, sandbox string) []AgentCommand {
+	var parts []string
+	parts = append(parts, "claude")
+	if model != "" {
+		parts = append(parts, "--model", model)
+	}
+	switch sandbox {
+	case "dangerously-skip-permissions":
+		parts = append(parts, "--dangerously-skip-permissions")
+	}
+	parts = append(parts, "{prompt}")
+	return []AgentCommand{
+		{Name: "Claude (migrated)", Command: strings.Join(parts, " ")},
+	}
+}
+
+// migrateCursor builds agent commands from legacy Cursor provider fields.
+func migrateCursor(model, sandbox string) []AgentCommand {
+	var parts []string
+	parts = append(parts, "cursor-agent")
+	if sandbox != "" {
+		parts = append(parts, "--sandbox", sandbox)
+	}
+	if model != "" {
+		parts = append(parts, "--model", model)
+	}
+	parts = append(parts, "{prompt}")
+	return []AgentCommand{
+		{Name: "Cursor (migrated)", Command: strings.Join(parts, " ")},
+	}
 }
 
 // SaveSettings writes settings to a JSON file, creating directories as needed.
@@ -300,25 +351,5 @@ func validateDensity(density string, label string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid %s value %q: must be comfortable or compact", label, density)
-	}
-}
-
-// validateAgentProvider validates the allowed agent providers.
-func validateAgentProvider(provider string, label string) error {
-	switch provider {
-	case "cursor", "claude":
-		return nil
-	default:
-		return fmt.Errorf("invalid %s value %q: must be cursor or claude", label, provider)
-	}
-}
-
-// validateAgentSandbox validates the allowed sandbox values.
-func validateAgentSandbox(sandbox string, label string) error {
-	switch sandbox {
-	case "enabled", "disabled":
-		return nil
-	default:
-		return fmt.Errorf("invalid %s value %q: must be enabled or disabled", label, sandbox)
 	}
 }

@@ -234,7 +234,9 @@ func (pm *AgentPromptTemplatesModal) applyFieldsToSelected() {
 	}
 
 	name := displayTemplateName(pm.templates[pm.selectedIndex].Name)
-	pm.list.SetItemText(pm.selectedIndex, name, "")
+	if pm.selectedIndex < pm.list.GetItemCount() {
+		pm.list.SetItemText(pm.selectedIndex, name, "")
+	}
 }
 
 func (pm *AgentPromptTemplatesModal) addTemplate() {

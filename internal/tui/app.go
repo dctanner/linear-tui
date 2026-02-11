@@ -10,12 +10,18 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/roeyazroel/linear-tui/internal/agents"
 	"github.com/roeyazroel/linear-tui/internal/cache"
 	"github.com/roeyazroel/linear-tui/internal/config"
 	"github.com/roeyazroel/linear-tui/internal/linearapi"
 	"github.com/roeyazroel/linear-tui/internal/logger"
 )
+
+// PendingExecCommand holds the command to exec after the TUI exits.
+type PendingExecCommand struct {
+	Binary string
+	Args   []string
+	Dir    string
+}
 
 // SortField represents a field to sort issues by.
 type SortField string
@@ -60,10 +66,10 @@ type App struct {
 	editLabelsModal        *EditLabelsModal
 	settingsModal          *SettingsModal
 	promptTemplatesModal   *AgentPromptTemplatesModal
-	agentPromptModal       *AgentPromptModal
-	agentOutputModal       *AgentOutputModal
-	agentRunner            *agents.Runner
-	agentPromptTemplates   []config.AgentPromptTemplate
+	agentPromptModal     *AgentPromptModal
+	agentPromptTemplates []config.AgentPromptTemplate
+	pendingExec          *PendingExecCommand
+	parseCommand         func(commandTemplate, fullPrompt, branchName string) (string, []string, error)
 
 	// App state (protected by issuesMu)
 	issuesMu            sync.RWMutex
@@ -178,6 +184,11 @@ func (a *App) Run() error {
 
 	// Start the application event loop
 	return a.app.Run()
+}
+
+// PendingExec returns the command to exec after the TUI exits, or nil.
+func (a *App) PendingExec() *PendingExecCommand {
+	return a.pendingExec
 }
 
 // loadInitialData fetches user, navigation, and issues in a background goroutine.
@@ -305,9 +316,6 @@ func (a *App) applyDensityToComponents() {
 		padding := a.density.StatusBarPadding
 		a.statusBar.SetBorderPadding(padding.Top, padding.Bottom, padding.Left, padding.Right)
 	}
-	if a.agentOutputModal != nil {
-		a.agentOutputModal.ApplyDensity(a.density)
-	}
 }
 
 func (a *App) rebuildModals() {
@@ -327,12 +335,6 @@ func (a *App) rebuildModals() {
 	a.settingsModal = NewSettingsModal(a)
 	a.promptTemplatesModal = NewAgentPromptTemplatesModal(a)
 	a.agentPromptModal = NewAgentPromptModal(a)
-	if a.pages == nil || !a.pages.HasPage("agent_output") {
-		a.agentOutputModal = NewAgentOutputModal(a)
-	} else {
-		a.agentOutputModal.ApplyTheme(a.theme)
-		a.agentOutputModal.ApplyDensity(a.density)
-	}
 }
 
 func (a *App) applyIssuesTableTheme(table *tview.Table) {
@@ -630,8 +632,6 @@ func (a *App) buildLayout() {
 	a.settingsModal = NewSettingsModal(a)
 	a.promptTemplatesModal = NewAgentPromptTemplatesModal(a)
 	a.agentPromptModal = NewAgentPromptModal(a)
-	a.agentOutputModal = NewAgentOutputModal(a)
-	a.agentRunner = agents.NewRunner()
 
 	// Add main layout to pages
 	a.pages.AddPage("main", a.mainLayout, true, true)
@@ -682,11 +682,6 @@ func (a *App) bindGlobalKeys() {
 		// Check if agent prompt modal is visible and handle its keys
 		if a.pages.HasPage("agent_prompt") && a.agentPromptModal != nil {
 			return a.agentPromptModal.HandleKey(event)
-		}
-
-		// Check if agent output modal is visible and handle its keys
-		if a.pages.HasPage("agent_output") && a.agentOutputModal != nil {
-			return a.agentOutputModal.HandleKey(event)
 		}
 
 		// Handle palette first if it's open
@@ -1675,7 +1670,7 @@ func (a *App) updateStatusBar() {
 	case FocusNavigation:
 		helpText = fmt.Sprintf("%s↑↓: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusIssues:
-		helpText = fmt.Sprintf("%sj/k: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
+		helpText = fmt.Sprintf("%sj/k: navigate | Enter: select | a: agent | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusDetails:
 		helpText = fmt.Sprintf("%sj/k: scroll | Tab: switch description/comments | →/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusPalette:
